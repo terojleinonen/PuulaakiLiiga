@@ -126,3 +126,7 @@ All under `/api`, JSON, cookie-authenticated.
 | `POST /import` | Admin — replaces all league data |
 | `GET/POST/PUT/DELETE /users` | Admin |
 | `/auth/{me,setup,login,logout,password,config,forgot,reset}` | see `Auth.cs` |
+
+## License
+
+[MIT](LICENSE) © 2026 Tero Leinonen
