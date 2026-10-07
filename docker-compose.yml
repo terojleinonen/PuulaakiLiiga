@@ -1,12 +1,32 @@
+# HTTPS out of the box: Caddy terminates TLS and proxies to the app.
+#
+#   Try locally:   docker compose up --build        ->  https://localhost:8443
+#                  (the certificate is from Caddy's local CA: run `docker compose exec caddy caddy trust`
+#                   or accept the browser warning)
+#   Production:    SITE_ADDRESS=league.example.com PUBLIC_URL=https://league.example.com docker compose up -d
+#                  and publish ports 80/443 (change the mappings below).
+#
+# Password reset by email is switched on by setting Smtp__Host (see README).
 services:
   app:
     build: .
-    ports: ["8080:8080"]
+    expose: ["8080"]
     volumes: ["puulaakiliiga-data:/data"]
     environment:
-      # Session cookies are Secure-only by default, so put the app behind an HTTPS proxy.
-      # For a quick try over plain http://localhost:8080 uncomment:
-      # Auth__SecureCookies: "false"
       ASPNETCORE_ENVIRONMENT: Production
+      App__PublicUrl: ${PUBLIC_URL:-https://localhost:8443}
+      Smtp__Host: ${SMTP_HOST:-}
+      Smtp__Port: ${SMTP_PORT:-587}
+      Smtp__User: ${SMTP_USER:-}
+      Smtp__Password: ${SMTP_PASSWORD:-}
+      Smtp__From: ${SMTP_FROM:-}
+  caddy:
+    image: caddy:2
+    ports: ["8443:443", "8080:80"]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data"]
+    depends_on: [app]
 volumes:
   puulaakiliiga-data:
+  caddy-data:

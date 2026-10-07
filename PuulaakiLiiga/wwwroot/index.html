@@ -28,10 +28,12 @@
 <div id="auth" class="auth" hidden>
   <form id="authForm">
     <div class="logo">🪵</div><h2 id="authTitle"></h2><p id="authSub"></p>
-    <label>Username<input id="authUser" required autocomplete="username"></label>
-    <label>Password<input id="authPass" type="password" required autocomplete="current-password"></label>
-    <div id="authErr" role="alert"></div>
+    <label id="userRow"><span id="userLabel">Username</span><input id="authUser" autocomplete="username"></label>
+    <label id="passRow"><span id="passLabel">Password</span><input id="authPass" type="password" autocomplete="current-password"></label>
+    <div id="authErr" role="alert"></div><div id="authMsg" role="status"></div>
     <button class="primary" id="authBtn"></button>
+    <a href="#" id="forgotLink" class="link">Forgot password?</a>
+    <a href="#" id="backLink" class="link">Back to sign in</a>
   </form>
 </div>
 <div id="toast"></div>

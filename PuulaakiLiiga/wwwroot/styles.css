@@ -48,3 +48,4 @@ dialog::backdrop{background:#0008}
 #authErr{color:var(--danger);min-height:1.2em;font-size:13px}
 #whoami{font-size:13px;opacity:.8;padding:0 4px}
 [hidden]{display:none!important}
+#authMsg{color:var(--accent);font-size:13px}#authMsg:empty{display:none}.link{font-size:13px;color:var(--mute);text-align:center}

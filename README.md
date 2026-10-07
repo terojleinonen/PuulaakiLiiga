@@ -27,8 +27,23 @@ Passwords are hashed with PBKDF2 (210,000 rounds, min. 8 characters).
 - **Lockout:** stored in the database (survives restarts). From the 5th wrong password the account is locked for
   1, 2, 4 … minutes (max 60). Locked and unknown accounts get the same error as a wrong password.
 - **Change your password:** "Change password" in the sidebar.
-- **Forgot the admin password:** run on the server
+- **Forgot password (email):** set up SMTP and a public URL (below); the sign-in page then shows "Forgot password?".
+  The user gets a single-use link that is valid for 30 minutes (only a hash of the token is stored). The answer is
+  identical whether or not the account exists. Admins set each user's email on the Users page.
+- **Forgot the admin password (no email):** run on the server
   `dotnet PuulaakiLiiga.dll reset-password <username>` — it prints a new random password and clears the lockout.
+
+### Email settings
+
+| Setting (env var) | Meaning |
+|---|---|
+| `App__PublicUrl` | Public address used in reset links, e.g. `https://league.example.com`. Required; never taken from the request. |
+| `Smtp__Host`, `Smtp__Port` (587) | SMTP server |
+| `Smtp__User`, `Smtp__Password` | SMTP login (optional) |
+| `Smtp__From` | Sender address |
+| `Smtp__EnableSsl` (true) | STARTTLS/SSL |
+
+Without `Smtp__Host` and `App__PublicUrl` the feature is off and the link is hidden.
 
 ## Database and migrations
 
@@ -38,8 +53,19 @@ Schema changes use EF Core migrations, applied automatically at startup. Databas
     dotnet tool install --global dotnet-ef
     dotnet ef migrations add <Name> --project TeamManagerClassLibrary --startup-project PuulaakiLiiga
 
-## Docker
+## Docker (with HTTPS)
 
-    docker compose up --build        # http://localhost:8080, data in the puulaakiliiga-data volume
+`docker-compose.yml` runs the app plus [Caddy](https://caddyserver.com), which terminates HTTPS:
 
-Set `Auth__SecureCookies: "false"` in `docker-compose.yml` to try it over plain http; use HTTPS for real deployments.
+    docker-compose up --build        # https://localhost:8443 (also: docker compose up --build)
+
+Locally Caddy uses its own certificate authority, so the browser shows a warning until you run
+`docker-compose exec caddy caddy trust` (or just accept it). For a real domain:
+
+    SITE_ADDRESS=league.example.com PUBLIC_URL=https://league.example.com \
+    SMTP_HOST=smtp.example.com SMTP_USER=... SMTP_PASSWORD=... SMTP_FROM=league@example.com \
+    docker-compose up -d
+
+and change the port mappings in `docker-compose.yml` to `80:80` / `443:443`; Caddy then fetches a Let's Encrypt
+certificate automatically. Data lives in the `puulaakiliiga-data` volume.
+Without Docker, put any HTTPS reverse proxy in front of the app, or set `Auth__SecureCookies=false` for plain http.

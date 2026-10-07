@@ -9,6 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 var connection = builder.Configuration.GetConnectionString("Default") ?? "Data Source=puulaakiliiga.db";
 builder.Services.AddDbContext<LeagueContext>(o => o.UseSqlite(connection));
 
+builder.Services.AddSingleton<EmailSender>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(o =>
 {
     o.Cookie.Name = "puulaakiliiga.auth";

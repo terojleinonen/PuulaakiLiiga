@@ -26,13 +26,19 @@ static class PasswordHasher
 
 record Credentials(string? Username, string? Password);
 record PasswordChange(string? Current, string? New);
-record UserInput(string? Username, string? Password, string? Role);
-record UserView(int Id, string Username, string Role);
+record UserInput(string? Username, string? Password, string? Role, string? Email);
+record UserView(int Id, string Username, string Role, string? Email);
+record ForgotRequest(string? Identifier);
+record ResetRequest(string? Token, string? Password);
 
 static class AuthEndpoints
 {
     static readonly string DummyHash = PasswordHasher.Hash("dummy-password");
     const int MinPassword = 8;
+
+    static string HashToken(string token) => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
+    static string? CleanEmail(string? e) => string.IsNullOrWhiteSpace(e) ? null : e.Trim().ToLowerInvariant();
+    static bool ValidEmail(string? e) => e == null || (e.Length <= 200 && System.Net.Mail.MailAddress.TryCreate(e, out var m) && m.Address == e);
 
     static string Norm(string? u) => (u ?? "").Trim().ToLowerInvariant();
 
@@ -113,6 +119,41 @@ static class AuthEndpoints
             return Results.NoContent();
         }).RequireAuthorization();
 
+        auth.MapGet("/config", (EmailSender mail) => new { resetEnabled = mail.Configured });
+
+        // Always answers 204 so it cannot be used to find out which accounts exist. The mail is sent in the background
+        // for the same reason (no timing difference). Links are built from App:PublicUrl, never from the Host header.
+        auth.MapPost("/forgot", async (LeagueContext db, EmailSender mail, ForgotRequest r) =>
+        {
+            var id = Norm(r.Identifier);
+            if (!mail.Configured || id.Length == 0) return Results.NoContent();
+            var user = await db.Users.FirstOrDefaultAsync(u => u.Username == id || u.Email == id);
+            // at most one mail per minute per account (the token lives 30 minutes)
+            if (user?.Email != null && !(user.PasswordResetExpires > DateTime.UtcNow.AddMinutes(29)))
+            {
+                var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).Replace('+', '-').Replace('/', '_').TrimEnd('=');
+                user.PasswordResetTokenHash = HashToken(token);
+                user.PasswordResetExpires = DateTime.UtcNow.AddMinutes(30);
+                await db.SaveChangesAsync();
+                _ = mail.SendAsync(user.Email, "Puulaakiliiga password reset",
+                    $"Hi {user.Username},\n\nUse this link within 30 minutes to choose a new password:\n{mail.PublicUrl}/#reset={token}\n\nIf you did not ask for this, ignore this email.");
+            }
+            return Results.NoContent();
+        });
+
+        auth.MapPost("/reset", async (LeagueContext db, ResetRequest r) =>
+        {
+            if ((r.Password?.Length ?? 0) < MinPassword) return Results.BadRequest(new { error = $"Password must be at least {MinPassword} characters." });
+            var hash = HashToken(r.Token ?? "");
+            var user = await db.Users.FirstOrDefaultAsync(u => u.PasswordResetTokenHash == hash && u.PasswordResetExpires > DateTime.UtcNow);
+            if (user == null) return Results.BadRequest(new { error = "This reset link is invalid or has expired." });
+            user.PasswordHash = PasswordHasher.Hash(r.Password!);
+            user.SessionVersion++; user.FailedLogins = 0; user.LockedUntil = null;
+            user.PasswordResetTokenHash = null; user.PasswordResetExpires = null;   // single use
+            await db.SaveChangesAsync();
+            return Results.NoContent();
+        });
+
         auth.MapPost("/logout", async (HttpContext http) =>
         {
             await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
@@ -123,17 +164,19 @@ static class AuthEndpoints
         var users = api.MapGroup("/users").RequireAuthorization("Admin");
 
         users.MapGet("/", async (LeagueContext db) =>
-            await db.Users.OrderBy(u => u.Username).Select(u => new UserView(u.Id, u.Username, u.Role)).ToListAsync());
+            await db.Users.OrderBy(u => u.Username).Select(u => new UserView(u.Id, u.Username, u.Role, u.Email)).ToListAsync());
 
         users.MapPost("/", async (LeagueContext db, UserInput i) =>
         {
             var name = Norm(i.Username);
+            var email = CleanEmail(i.Email);
+            if (!ValidEmail(email)) return Results.BadRequest(new { error = "Invalid email address." });
             if (Validate(name, i.Password, i.Role ?? Roles.Viewer, true) is { } err) return Results.BadRequest(new { error = err });
             if (await db.Users.AnyAsync(u => u.Username == name)) return Results.BadRequest(new { error = "Username already exists." });
-            var u = new User { Username = name, PasswordHash = PasswordHasher.Hash(i.Password!), Role = i.Role ?? Roles.Viewer };
+            var u = new User { Username = name, PasswordHash = PasswordHasher.Hash(i.Password!), Role = i.Role ?? Roles.Viewer, Email = email };
             db.Users.Add(u);
             await db.SaveChangesAsync();
-            return Results.Ok(new UserView(u.Id, u.Username, u.Role));
+            return Results.Ok(new UserView(u.Id, u.Username, u.Role, u.Email));
         });
 
         users.MapPut("/{id:int}", async (HttpContext http, LeagueContext db, int id, UserInput i) =>
@@ -141,16 +184,18 @@ static class AuthEndpoints
             var u = await db.Users.FindAsync(id);
             if (u == null) return Results.NotFound();
             var name = Norm(i.Username);
+            var email = CleanEmail(i.Email);
+            if (!ValidEmail(email)) return Results.BadRequest(new { error = "Invalid email address." });
             if (Validate(name, i.Password, i.Role ?? u.Role, false) is { } err) return Results.BadRequest(new { error = err });
             if (await db.Users.AnyAsync(x => x.Username == name && x.Id != id)) return Results.BadRequest(new { error = "Username already exists." });
             var newRole = i.Role ?? u.Role;
             if (u.Role == Roles.Admin && newRole != Roles.Admin && !await db.Users.AnyAsync(x => x.Role == Roles.Admin && x.Id != id))
                 return Results.BadRequest(new { error = "There must be at least one admin." });
             if (newRole != u.Role || !string.IsNullOrEmpty(i.Password)) u.SessionVersion++;   // end their existing sessions
-            u.Username = name; u.Role = newRole;
+            u.Username = name; u.Role = newRole; u.Email = email;
             if (!string.IsNullOrEmpty(i.Password)) { u.PasswordHash = PasswordHasher.Hash(i.Password); u.FailedLogins = 0; u.LockedUntil = null; }
             await db.SaveChangesAsync();
-            return Results.Ok(new UserView(u.Id, u.Username, u.Role));
+            return Results.Ok(new UserView(u.Id, u.Username, u.Role, u.Email));
         });
 
         users.MapDelete("/{id:int}", async (HttpContext http, LeagueContext db, int id) =>

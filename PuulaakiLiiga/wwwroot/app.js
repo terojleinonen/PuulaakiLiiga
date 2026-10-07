@@ -97,10 +97,11 @@ E.users = {
   fields: [
     { k: 'username', label: 'Username', req: true },
     { k: 'role', label: 'Role (Admin: everything · Manager: edit league data · Viewer: read-only)', type: 'select', opts: () => ['Viewer', 'Manager', 'Admin'].map(r => [r, r]), req: true },
+    { k: 'email', label: 'Email (for password reset links)', type: 'email' },
     { k: 'password', label: 'Password (min 8 characters; leave empty to keep the current one)', type: 'password' },
   ],
   sort: (a, b) => a.username.localeCompare(b.username),
-  cols: [['Username', u => `<b>${esc(u.username)}</b>${u.username === me?.username ? ' <span class="pill">you</span>' : ''}`], ['Role', u => `<span class="pill">${esc(u.role)}</span>`]],
+  cols: [['Username', u => `<b>${esc(u.username)}</b>${u.username === me?.username ? ' <span class="pill">you</span>' : ''}`], ['Email', u => esc(u.email)], ['Role', u => `<span class="pill">${esc(u.role)}</span>`]],
 };
 const NAV_ALL = ['standings', 'teams', 'players', 'coaches', 'contacts', 'games', 'penalties', 'users'];
 const nav = () => NAV_ALL.filter(n => n !== 'users' || isAdmin());
@@ -241,23 +242,48 @@ $('#demoBtn').onclick = guard(async () => {
 });
 
 // ---- Sign in / first-run setup -----------------------------------------------------
-let setupMode = false;
-function showAuth() {
+let authMode = 'login', resetEnabled = false, resetToken = null;   // modes: login | setup | forgot | reset
+const AUTH = {
+  login:  ['Sign in', 'Puulaakiliiga league manager', 'Sign in'],
+  setup:  ['Welcome! Create the admin account', 'This is the first run. The admin can add other users later.', 'Create admin & sign in'],
+  forgot: ['Forgot your password?', 'Enter your username or email and we will send a reset link.', 'Send reset link'],
+  reset:  ['Choose a new password', 'Use at least 8 characters.', 'Change password'],
+};
+function showAuth(mode) {
+  if (mode) authMode = mode;
+  const [title, sub, btn] = AUTH[authMode];
   $('#auth').hidden = false;
-  $('#authTitle').textContent = setupMode ? 'Welcome! Create the admin account' : 'Sign in';
-  $('#authSub').textContent = setupMode ? 'This is the first run. The admin can add other users later.' : 'Puulaakiliiga league manager';
-  $('#authBtn').textContent = setupMode ? 'Create admin & sign in' : 'Sign in';
-  $('#authPass').autocomplete = setupMode ? 'new-password' : 'current-password';
+  $('#authTitle').textContent = title; $('#authSub').textContent = sub; $('#authBtn').textContent = btn;
+  $('#userRow').hidden = authMode === 'reset';
+  $('#passRow').hidden = authMode === 'forgot';
+  $('#authUser').required = authMode !== 'reset'; $('#authPass').required = authMode !== 'forgot';
+  $('#userLabel').textContent = authMode === 'forgot' ? 'Username or email' : 'Username';
+  $('#passLabel').textContent = authMode === 'reset' ? 'New password' : 'Password';
+  $('#authPass').autocomplete = authMode === 'login' ? 'current-password' : 'new-password';
+  $('#forgotLink').hidden = !(authMode === 'login' && resetEnabled);
+  $('#backLink').hidden = authMode !== 'forgot';
   $('#authErr').textContent = ''; $('#authPass').value = '';
-  $('#authUser').focus();
+  (authMode === 'reset' ? $('#authPass') : $('#authUser')).focus();
 }
+$('#forgotLink').onclick = e => { e.preventDefault(); $('#authMsg').textContent = ''; showAuth('forgot'); };
+$('#backLink').onclick = e => { e.preventDefault(); $('#authMsg').textContent = ''; showAuth('login'); };
 $('#authForm').onsubmit = async ev => {
   ev.preventDefault();
+  $('#authErr').textContent = ''; $('#authMsg').textContent = '';
   try {
-    me = await api('POST', setupMode ? '/api/auth/setup' : '/api/auth/login', { username: $('#authUser').value, password: $('#authPass').value });
-    setupMode = false; $('#auth').hidden = true; $('#authPass').value = '';
-    if (!nav().includes(page)) page = 'standings';
-    await refresh();
+    if (authMode === 'forgot') {
+      await api('POST', '/api/auth/forgot', { identifier: $('#authUser').value });
+      $('#authMsg').textContent = 'If an account matches, an email with a reset link is on its way.';
+    } else if (authMode === 'reset') {
+      await api('POST', '/api/auth/reset', { token: resetToken, password: $('#authPass').value });
+      resetToken = null; history.replaceState(null, '', location.pathname);
+      showAuth('login'); $('#authMsg').textContent = 'Password changed. Please sign in.';
+    } else {
+      me = await api('POST', authMode === 'setup' ? '/api/auth/setup' : '/api/auth/login', { username: $('#authUser').value, password: $('#authPass').value });
+      authMode = 'login'; $('#auth').hidden = true; $('#authPass').value = '';
+      if (!nav().includes(page)) page = 'standings';
+      await refresh();
+    }
   } catch (e) { $('#authErr').textContent = e.message; }
 };
 $('#pwBtn').onclick = () => {
@@ -275,15 +301,18 @@ $('#pwBtn').onclick = () => {
   });
   dlg.showModal();
 };
-$('#logoutBtn').onclick = async () => { try { await api('POST', '/api/auth/logout'); } catch {} me = null; db = structuredClone(EMPTY); render(); showAuth(); };
+$('#logoutBtn').onclick = async () => { try { await api('POST', '/api/auth/logout'); } catch {} me = null; db = structuredClone(EMPTY); render(); $('#authMsg').textContent = ''; showAuth('login'); };
 
 (async function boot() {
+  try { resetEnabled = (await (await fetch('/api/auth/config')).json()).resetEnabled; } catch {}
+  const t = /^#reset=([\w-]+)$/.exec(location.hash);
+  if (t) { resetToken = t[1]; return showAuth('reset'); }
   const r = await fetch('/api/auth/me');
   if (r.ok) {
     const j = await r.json();
-    if (j.needsSetup) { setupMode = true; return showAuth(); }
+    if (j.needsSetup) return showAuth('setup');
     me = j; $('#auth').hidden = true;
     const h = location.hash.slice(1); if (nav().includes(h)) page = h;
     await refresh();
-  } else showAuth();
+  } else showAuth('login');
 })();

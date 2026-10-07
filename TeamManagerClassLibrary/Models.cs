@@ -30,6 +30,10 @@ public class User : Entity { public string Username { get; set; } = ""; public s
     public DateTime? LockedUntil { get; set; }
     /// <summary>Bumped on password/role change so existing sessions stop working.</summary>
     public int SessionVersion { get; set; }
+    public string? Email { get; set; }
+    /// <summary>SHA-256 of the emailed reset token (the token itself is never stored).</summary>
+    public string? PasswordResetTokenHash { get; set; }
+    public DateTime? PasswordResetExpires { get; set; }
 }
 
 public class LeagueContext(DbContextOptions<LeagueContext> options) : DbContext(options)
