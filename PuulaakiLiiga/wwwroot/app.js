@@ -260,6 +260,21 @@ $('#authForm').onsubmit = async ev => {
     await refresh();
   } catch (e) { $('#authErr').textContent = e.message; }
 };
+$('#pwBtn').onclick = () => {
+  const f = $('#form'), dlg = $('#dlg');
+  f.innerHTML = `<h3>Change password</h3>
+    <label>Current password<input name="cur" type="password" required autocomplete="current-password"></label>
+    <label>New password (min 8 characters)<input name="new" type="password" required minlength="8" autocomplete="new-password"></label>
+    <div class="btns"><button type="button" id="cancel">Cancel</button><button class="primary">Change</button></div>`;
+  $('#cancel').onclick = () => dlg.close();
+  f.onsubmit = guard(async ev => {
+    ev.preventDefault();
+    const d = new FormData(f);
+    await api('POST', '/api/auth/password', { current: d.get('cur'), new: d.get('new') });
+    dlg.close(); toast('Password changed');
+  });
+  dlg.showModal();
+};
 $('#logoutBtn').onclick = async () => { try { await api('POST', '/api/auth/logout'); } catch {} me = null; db = structuredClone(EMPTY); render(); showAuth(); };
 
 (async function boot() {

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authentication;
@@ -26,13 +25,12 @@ static class PasswordHasher
 }
 
 record Credentials(string? Username, string? Password);
+record PasswordChange(string? Current, string? New);
 record UserInput(string? Username, string? Password, string? Role);
 record UserView(int Id, string Username, string Role);
 
 static class AuthEndpoints
 {
-    // After 5 wrong passwords a username is locked for a minute (in-memory, per process).
-    static readonly ConcurrentDictionary<string, (int Fails, DateTime Until)> failures = new();
     static readonly string DummyHash = PasswordHasher.Hash("dummy-password");
     const int MinPassword = 8;
 
@@ -41,7 +39,7 @@ static class AuthEndpoints
     static Task SignIn(HttpContext http, User u) => http.SignInAsync(
         CookieAuthenticationDefaults.AuthenticationScheme,
         new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, u.Id.ToString()), new Claim(ClaimTypes.Name, u.Username), new Claim(ClaimTypes.Role, u.Role)],
+            [new Claim(ClaimTypes.NameIdentifier, u.Id.ToString()), new Claim(ClaimTypes.Name, u.Username), new Claim(ClaimTypes.Role, u.Role), new Claim("sv", u.SessionVersion.ToString())],
             CookieAuthenticationDefaults.AuthenticationScheme)),
         new AuthenticationProperties { IsPersistent = true });
 
@@ -77,23 +75,43 @@ static class AuthEndpoints
             return Results.Ok(new { username = u.Username, role = u.Role });
         });
 
+        // Failed attempts are stored on the user. From the 5th failure the account is locked for
+        // 1, 2, 4, … minutes (max 60) until a correct login or a password reset clears it.
+        // Locked and unknown accounts get the same answer as a wrong password.
         auth.MapPost("/login", async (HttpContext http, LeagueContext db, Credentials c) =>
         {
             var name = Norm(c.Username);
-            if (failures.TryGetValue(name, out var f) && f.Until > DateTime.UtcNow)
-                return Results.Json(new { error = "Too many attempts. Try again in a minute." }, statusCode: 429);
             var user = await db.Users.FirstOrDefaultAsync(x => x.Username == name);
-            var ok = PasswordHasher.Verify(c.Password ?? "", user?.PasswordHash ?? DummyHash) && user != null;
-            if (!ok)
+            var passwordOk = PasswordHasher.Verify(c.Password ?? "", user?.PasswordHash ?? DummyHash) && user != null;
+            var locked = user?.LockedUntil > DateTime.UtcNow;
+            if (!passwordOk || locked)
             {
-                var fails = failures.TryGetValue(name, out var prev) ? prev.Fails + 1 : 1;
-                failures[name] = (fails, fails >= 5 ? DateTime.UtcNow.AddMinutes(1) : DateTime.MinValue);
-                return Results.Json(new { error = "Wrong username or password." }, statusCode: 401);
+                if (user != null && !locked)
+                {
+                    user.FailedLogins++;
+                    if (user.FailedLogins % 5 == 0)
+                        user.LockedUntil = DateTime.UtcNow.AddMinutes(Math.Min(60, 1 << Math.Min(6, user.FailedLogins / 5 - 1)));
+                    await db.SaveChangesAsync();
+                }
+                return Results.Json(new { error = "Wrong username or password (or the account is temporarily locked)." }, statusCode: 401);
             }
-            failures.TryRemove(name, out _);
-            await SignIn(http, user!);
-            return Results.Ok(new { username = user!.Username, role = user.Role });
+            user!.FailedLogins = 0; user.LockedUntil = null;
+            await db.SaveChangesAsync();
+            await SignIn(http, user);
+            return Results.Ok(new { username = user.Username, role = user.Role });
         });
+
+        auth.MapPost("/password", async (HttpContext http, LeagueContext db, PasswordChange p) =>
+        {
+            var user = await db.Users.FindAsync(int.Parse(http.User.FindFirstValue(ClaimTypes.NameIdentifier)!));
+            if (user == null || !PasswordHasher.Verify(p.Current ?? "", user.PasswordHash)) return Results.BadRequest(new { error = "Current password is wrong." });
+            if ((p.New?.Length ?? 0) < MinPassword) return Results.BadRequest(new { error = $"Password must be at least {MinPassword} characters." });
+            user.PasswordHash = PasswordHasher.Hash(p.New!);
+            user.SessionVersion++;   // signs out every other session of this user
+            await db.SaveChangesAsync();
+            await SignIn(http, user);
+            return Results.NoContent();
+        }).RequireAuthorization();
 
         auth.MapPost("/logout", async (HttpContext http) =>
         {
@@ -128,8 +146,9 @@ static class AuthEndpoints
             var newRole = i.Role ?? u.Role;
             if (u.Role == Roles.Admin && newRole != Roles.Admin && !await db.Users.AnyAsync(x => x.Role == Roles.Admin && x.Id != id))
                 return Results.BadRequest(new { error = "There must be at least one admin." });
+            if (newRole != u.Role || !string.IsNullOrEmpty(i.Password)) u.SessionVersion++;   // end their existing sessions
             u.Username = name; u.Role = newRole;
-            if (!string.IsNullOrEmpty(i.Password)) u.PasswordHash = PasswordHasher.Hash(i.Password);
+            if (!string.IsNullOrEmpty(i.Password)) { u.PasswordHash = PasswordHasher.Hash(i.Password); u.FailedLogins = 0; u.LockedUntil = null; }
             await db.SaveChangesAsync();
             return Results.Ok(new UserView(u.Id, u.Username, u.Role));
         });

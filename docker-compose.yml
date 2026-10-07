@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    ports: ["8080:8080"]
+    volumes: ["puulaakiliiga-data:/data"]
+    environment:
+      # Session cookies are Secure-only by default, so put the app behind an HTTPS proxy.
+      # For a quick try over plain http://localhost:8080 uncomment:
+      # Auth__SecureCookies: "false"
+      ASPNETCORE_ENVIRONMENT: Production
+volumes:
+  puulaakiliiga-data:

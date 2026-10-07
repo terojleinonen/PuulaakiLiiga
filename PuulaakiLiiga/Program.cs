@@ -1,3 +1,6 @@
+using System.Security.Claims;
+using System.Security.Cryptography;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
 using TeamManagerClassLibrary;
@@ -11,10 +14,24 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     o.Cookie.Name = "puulaakiliiga.auth";
     o.Cookie.HttpOnly = true;
     o.Cookie.SameSite = SameSiteMode.Strict;
-    o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    // Secure-only cookie everywhere except local development. Set Auth:SecureCookies=false only for plain-http setups.
+    o.Cookie.SecurePolicy = builder.Configuration.GetValue("Auth:SecureCookies", !builder.Environment.IsDevelopment())
+        ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
     o.ExpireTimeSpan = TimeSpan.FromHours(8);
     o.SlidingExpiration = true;
     // The UI is a SPA: answer with status codes instead of redirecting to a login page.
+    // Re-check the user on every request: deleted users, and sessions older than the last password/role change, are signed out.
+    o.Events.OnValidatePrincipal = async c =>
+    {
+        var id = int.TryParse(c.Principal?.FindFirstValue(ClaimTypes.NameIdentifier), out var i) ? i : 0;
+        var db = c.HttpContext.RequestServices.GetRequiredService<LeagueContext>();
+        var current = await db.Users.Where(u => u.Id == id).Select(u => (int?)u.SessionVersion).FirstOrDefaultAsync();
+        if (current?.ToString() != c.Principal?.FindFirstValue("sv"))
+        {
+            c.RejectPrincipal();
+            await c.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        }
+    };
     o.Events.OnRedirectToLogin = c => { c.Response.StatusCode = 401; return Task.CompletedTask; };
     o.Events.OnRedirectToAccessDenied = c => { c.Response.StatusCode = 403; return Task.CompletedTask; };
 });
@@ -26,10 +43,23 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<LeagueContext>();
-    db.Database.EnsureCreated();
-    // EnsureCreated skips existing databases, so add the Users table to ones created before logins existed.
-    db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS \"Users\" (\"Id\" INTEGER NOT NULL CONSTRAINT \"PK_Users\" PRIMARY KEY AUTOINCREMENT, \"Username\" TEXT NOT NULL, \"PasswordHash\" TEXT NOT NULL, \"Role\" TEXT NOT NULL)");
-    db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Users_Username\" ON \"Users\" (\"Username\")");
+    AdoptLegacyDatabase(db);
+    db.Database.Migrate();
+}
+
+// Admin recovery without email: `dotnet PuulaakiLiiga.dll reset-password <username>` prints a new random password.
+if (args is ["reset-password", var who])
+{
+    using var s = app.Services.CreateScope();
+    var db = s.ServiceProvider.GetRequiredService<LeagueContext>();
+    var user = db.Users.FirstOrDefault(u => u.Username == who.Trim().ToLowerInvariant());
+    if (user == null) { Console.Error.WriteLine($"No such user: {who}"); return 1; }
+    var password = RandomNumberGenerator.GetString("abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789", 16);
+    user.PasswordHash = PasswordHasher.Hash(password);
+    user.SessionVersion++; user.FailedLogins = 0; user.LockedUntil = null;
+    db.SaveChanges();
+    Console.WriteLine($"New password for {user.Username}: {password}");
+    return 0;
 }
 
 app.UseDefaultFiles();
@@ -81,6 +111,19 @@ Crud<Game>("games", async (db, id) => await db.Penalties.Where(p => p.GameId == 
 Crud<Penalty>("penalties", (_, _) => Task.CompletedTask);
 
 app.Run();
+return 0;
+
+// Databases made by the pre-migrations versions (EnsureCreated) already have the tables of InitialCreate:
+// make sure Users exists and record that migration as applied so Migrate() only adds what is missing.
+static void AdoptLegacyDatabase(LeagueContext db)
+{
+    int Count(string table) => db.Database.SqlQuery<int>($"SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name={table}").Single();
+    if (Count("Games") == 0 || Count("__EFMigrationsHistory") > 0) return;
+    db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS \"Users\" (\"Id\" INTEGER NOT NULL CONSTRAINT \"PK_Users\" PRIMARY KEY AUTOINCREMENT, \"Username\" TEXT NOT NULL, \"PasswordHash\" TEXT NOT NULL, \"Role\" TEXT NOT NULL)");
+    db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Users_Username\" ON \"Users\" (\"Username\")");
+    db.Database.ExecuteSqlRaw("CREATE TABLE \"__EFMigrationsHistory\" (\"MigrationId\" TEXT NOT NULL CONSTRAINT \"PK___EFMigrationsHistory\" PRIMARY KEY, \"ProductVersion\" TEXT NOT NULL)");
+    db.Database.ExecuteSqlRaw("INSERT INTO \"__EFMigrationsHistory\" VALUES ({0}, '10.0.0')", db.Database.GetMigrations().First());
+}
 
 // POST/PUT/DELETE for one entity type. `cleanup` runs before delete to keep references consistent.
 void Crud<T>(string route, Func<LeagueContext, int, Task> cleanup) where T : Entity

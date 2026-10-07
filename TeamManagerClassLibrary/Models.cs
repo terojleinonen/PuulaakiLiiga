@@ -25,7 +25,12 @@ public static class Roles
     public const string Admin = "Admin", Manager = "Manager", Viewer = "Viewer";
     public static readonly string[] All = [Admin, Manager, Viewer];
 }
-public class User : Entity { public string Username { get; set; } = ""; public string PasswordHash { get; set; } = ""; public string Role { get; set; } = Roles.Viewer; }
+public class User : Entity { public string Username { get; set; } = ""; public string PasswordHash { get; set; } = ""; public string Role { get; set; } = Roles.Viewer;
+    public int FailedLogins { get; set; }
+    public DateTime? LockedUntil { get; set; }
+    /// <summary>Bumped on password/role change so existing sessions stop working.</summary>
+    public int SessionVersion { get; set; }
+}
 
 public class LeagueContext(DbContextOptions<LeagueContext> options) : DbContext(options)
 {
