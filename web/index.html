@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Puulaakiliiga</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand"><span class="logo">🪵</span><div><b>Puulaakiliiga</b><small>League manager</small></div></div>
+  <nav id="nav"></nav>
+  <div class="side-foot">
+    <button class="ghost" id="exportBtn">Export data</button>
+    <label class="ghost btn">Import data<input type="file" id="importFile" accept=".json" hidden></label>
+    <button class="ghost" id="demoBtn">Load demo data</button>
+  </div>
+</aside>
+<main>
+  <header class="top">
+    <h1 id="title"></h1>
+    <div class="actions"><input type="search" id="search" placeholder="Search…"><button class="primary" id="addBtn">+ Add</button></div>
+  </header>
+  <section id="view"></section>
+</main>
+<dialog id="dlg"><form method="dialog" id="form"></form></dialog>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
