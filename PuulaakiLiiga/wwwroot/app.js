@@ -1,17 +1,20 @@
 'use strict';
-// Puulaakiliiga – league manager. Data is stored in the browser (localStorage).
-const KEY = 'puulaakiliiga.v1';
-const EMPTY = { seq: 0, teams: [], players: [], coaches: [], contacts: [], games: [], penalties: [] };
-let db = load();
+// Puulaakiliiga – league manager. Data lives in the server's SQLite database (see /api).
+const EMPTY = { teams: [], players: [], coaches: [], contacts: [], games: [], penalties: [] };
+let db = structuredClone(EMPTY);
 let page = 'standings';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function load() {
-  try { return { ...EMPTY, ...JSON.parse(localStorage.getItem(KEY)) }; } catch { return structuredClone(EMPTY); }
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${method} ${url} failed (${r.status})`);
+  return r.status === 204 ? null : r.json();
 }
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch {} };
-const nextId = () => ++db.seq;
+async function refresh() {
+  try { db = { ...EMPTY, ...await api('GET', '/api/data') }; render(); } catch (e) { toast('Cannot reach the server'); }
+}
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
 const by = (list, id) => db[list].find(x => x.id === +id);
 const teamName = id => by('teams', id)?.name ?? '—';
 const playerName = id => by('players', id)?.name ?? '—';
@@ -143,7 +146,7 @@ function openForm(name, item) {
     return `<label>${x.label}${x.req ? ' *' : ''}${input}</label>`;
   }).join('')}<div class="btns"><button type="button" id="cancel">Cancel</button><button class="primary">Save</button></div>`;
   $('#cancel').onclick = () => dlg.close();
-  f.onsubmit = ev => {
+  f.onsubmit = guard(async ev => {
     ev.preventDefault();
     const rec = { ...(item || {}) };
     for (const x of e.fields) {
@@ -151,26 +154,18 @@ function openForm(name, item) {
       rec[x.k] = x.type === 'number' ? (raw === '' ? null : +raw) : x.type === 'select' ? (raw === '' ? null : +raw) : String(raw).trim();
     }
     const err = e.validate?.(rec); if (err) return toast(err);
-    if (item) Object.assign(item, rec); else db[name].push({ ...rec, id: nextId() });
-    save(); dlg.close(); render(); toast('Saved');
-  };
+    if (item) await api('PUT', `/api/${name}/${item.id}`, rec); else await api('POST', `/api/${name}`, rec);
+    dlg.close(); await refresh(); toast('Saved');
+  });
   dlg.showModal();
 }
 
-function remove(name, id) {
+const remove = guard(async (name, id) => {
   const it = by(name, id);
   if (!confirm(`Delete ${it.name || E[name].one}?`)) return;
-  db[name] = db[name].filter(x => x.id !== +id);
-  // keep references consistent
-  const clear = (list, key) => db[list].forEach(x => { if (x[key] === +id) x[key] = null; });
-  if (name === 'teams') { db.players = db.players.filter(p => p.teamId !== +id); db.games = db.games.filter(g => g.homeId !== +id && g.awayId !== +id); clear('coaches', 'teamId'); }
-  if (name === 'coaches') clear('teams', 'coachId');
-  if (name === 'contacts') clear('teams', 'contactId');
-  if (name === 'games') clear('penalties', 'gameId');
-  db.penalties = db.penalties.filter(p => by('players', p.playerId));
-  db.games = db.games.filter(g => by('teams', g.homeId) && by('teams', g.awayId));
-  save(); render(); toast('Deleted');
-}
+  await api('DELETE', `/api/${name}/${id}`);
+  await refresh(); toast('Deleted');
+});
 
 // ---- Shell -----------------------------------------------------------------------
 function render() {
@@ -197,13 +192,14 @@ $('#exportBtn').onclick = () => {
   a.download = 'puulaakiliiga.json'; a.click(); URL.revokeObjectURL(a.href);
 };
 $('#importFile').onchange = async e => {
-  try { db = { ...EMPTY, ...JSON.parse(await e.target.files[0].text()) }; save(); render(); toast('Imported'); } catch { toast('Invalid file'); }
+  try { await api('POST', '/api/import', JSON.parse(await e.target.files[0].text())); await refresh(); toast('Imported'); } catch { toast('Invalid file'); }
   e.target.value = '';
 };
-$('#demoBtn').onclick = () => {
+$('#demoBtn').onclick = guard(async () => {
   if (db.teams.length && !confirm('Replace current data with demo data?')) return;
   db = structuredClone(EMPTY);
-  const add = (list, o) => { const x = { ...o, id: nextId() }; db[list].push(x); return x.id; };
+  let seq = 0;
+  const add = (list, o) => { const x = { ...o, id: ++seq }; db[list].push(x); return x.id; };
   const names = ['Kuusi Kings', 'Mänty Bears', 'Koivu Wolves', 'Tammi Hawks'], teams = [];
   names.forEach((n, i) => {
     const c = add('contacts', { name: ['Aino Virta', 'Eero Salo', 'Liisa Mäki', 'Jussi Niemi'][i], phone: `+358 40 123 45${i}0`, email: `contact${i}@example.com` });
@@ -218,8 +214,10 @@ $('#demoBtn').onclick = () => {
     if (i % 2 === 0) add('penalties', { playerId: db.players.find(p => p.teamId === teams[a]).id, gameId: g, minutes: 2, reason: 'Tripping' });
   });
   add('games', { date: d(3), homeId: teams[1], awayId: teams[2], homeScore: null, awayScore: null, field: 'Field 1', notes: '' });
-  save(); render(); toast('Demo data loaded');
-};
+  await api('POST', '/api/import', db);
+  await refresh(); toast('Demo data loaded');
+});
 
 if (NAV.includes(location.hash.slice(1))) page = location.hash.slice(1);
 render();
+refresh();

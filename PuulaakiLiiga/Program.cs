@@ -1,24 +1,86 @@
-﻿using System;
+using Microsoft.EntityFrameworkCore;
 using TeamManagerClassLibrary;
-namespace PuulaakiLiiga
+
+var builder = WebApplication.CreateBuilder(args);
+var connection = builder.Configuration.GetConnectionString("Default") ?? "Data Source=puulaakiliiga.db";
+builder.Services.AddDbContext<LeagueContext>(o => o.UseSqlite(connection));
+
+var app = builder.Build();
+using (var scope = app.Services.CreateScope())
+    scope.ServiceProvider.GetRequiredService<LeagueContext>().Database.EnsureCreated();
+
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+var api = app.MapGroup("/api");
+
+// Everything in one call: the UI keeps a local copy and computes standings from it.
+api.MapGet("/data", async (LeagueContext db) => new
 {
-    class Program
+    teams = await db.Teams.AsNoTracking().ToListAsync(),
+    players = await db.Players.AsNoTracking().ToListAsync(),
+    coaches = await db.Coaches.AsNoTracking().ToListAsync(),
+    contacts = await db.Contacts.AsNoTracking().ToListAsync(),
+    games = await db.Games.AsNoTracking().ToListAsync(),
+    penalties = await db.Penalties.AsNoTracking().ToListAsync(),
+});
+
+// Replaces the whole database (used by import and demo data).
+api.MapPost("/import", async (LeagueContext db, ImportData d) =>
+{
+    await using var tx = await db.Database.BeginTransactionAsync();
+    db.RemoveRange(db.Penalties); db.RemoveRange(db.Games); db.RemoveRange(db.Players);
+    db.RemoveRange(db.Coaches); db.RemoveRange(db.Contacts); db.RemoveRange(db.Teams);
+    await db.SaveChangesAsync();
+    db.AddRange(d.Teams ?? []); db.AddRange(d.Players ?? []); db.AddRange(d.Coaches ?? []);
+    db.AddRange(d.Contacts ?? []); db.AddRange(d.Games ?? []); db.AddRange(d.Penalties ?? []);
+    await db.SaveChangesAsync();
+    await tx.CommitAsync();
+    return Results.NoContent();
+});
+
+Crud<Team>("teams", async (db, id) =>
+{
+    await db.Players.Where(p => p.TeamId == id).ExecuteDeleteAsync();
+    await db.Games.Where(g => g.HomeId == id || g.AwayId == id).ExecuteDeleteAsync();
+    await db.Coaches.Where(c => c.TeamId == id).ExecuteUpdateAsync(s => s.SetProperty(c => c.TeamId, (int?)null));
+    await db.Penalties.Where(p => !db.Players.Any(x => x.Id == p.PlayerId)).ExecuteDeleteAsync();
+    await db.Penalties.Where(p => p.GameId != null && !db.Games.Any(x => x.Id == p.GameId)).ExecuteUpdateAsync(s => s.SetProperty(p => p.GameId, (int?)null));
+});
+Crud<Player>("players", async (db, id) => await db.Penalties.Where(p => p.PlayerId == id).ExecuteDeleteAsync());
+Crud<Coach>("coaches", async (db, id) => await db.Teams.Where(t => t.CoachId == id).ExecuteUpdateAsync(s => s.SetProperty(t => t.CoachId, (int?)null)));
+Crud<Contact>("contacts", async (db, id) => await db.Teams.Where(t => t.ContactId == id).ExecuteUpdateAsync(s => s.SetProperty(t => t.ContactId, (int?)null)));
+Crud<Game>("games", async (db, id) => await db.Penalties.Where(p => p.GameId == id).ExecuteUpdateAsync(s => s.SetProperty(p => p.GameId, (int?)null)));
+Crud<Penalty>("penalties", (_, _) => Task.CompletedTask);
+
+app.Run();
+
+// POST/PUT/DELETE for one entity type. `cleanup` runs before delete to keep references consistent.
+void Crud<T>(string route, Func<LeagueContext, int, Task> cleanup) where T : Entity
+{
+    var g = api.MapGroup("/" + route);
+    g.MapPost("/", async (LeagueContext db, T e) =>
     {
-        static void Main(string[] args)
-        {
-
-            DataManager dataManager = new DataManager();
-
-            ManagerMenu managerMenu = new ManagerMenu(dataManager);
-
-            bool showMenu = true;
-            while(showMenu)
-            {
-                showMenu = managerMenu.MainMenu();
-            }
-
-            Console.WriteLine("Kiitos ohjelman käytöstä. ");
-            
-        }
-    }
+        e.Id = 0;
+        db.Add(e);
+        await db.SaveChangesAsync();
+        return Results.Created($"/api/{route}/{e.Id}", e);
+    });
+    g.MapPut("/{id:int}", async (LeagueContext db, int id, T e) =>
+    {
+        if (!await db.Set<T>().AnyAsync(x => x.Id == id)) return Results.NotFound();
+        e.Id = id;
+        db.Update(e);
+        await db.SaveChangesAsync();
+        return Results.Ok(e);
+    });
+    g.MapDelete("/{id:int}", async (LeagueContext db, int id) =>
+    {
+        var n = await db.Set<T>().Where(x => x.Id == id).ExecuteDeleteAsync();
+        if (n == 0) return Results.NotFound();
+        await cleanup(db, id);
+        return Results.NoContent();
+    });
 }
+
+record ImportData(List<Team>? Teams, List<Player>? Players, List<Coach>? Coaches, List<Contact>? Contacts, List<Game>? Games, List<Penalty>? Penalties);
