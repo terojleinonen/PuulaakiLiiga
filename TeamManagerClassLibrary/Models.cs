@@ -20,6 +20,13 @@ public class Game : Entity
 }
 public class Penalty : Entity { public int PlayerId { get; set; } public int? GameId { get; set; } public int? Minutes { get; set; } public string Reason { get; set; } = ""; }
 
+public static class Roles
+{
+    public const string Admin = "Admin", Manager = "Manager", Viewer = "Viewer";
+    public static readonly string[] All = [Admin, Manager, Viewer];
+}
+public class User : Entity { public string Username { get; set; } = ""; public string PasswordHash { get; set; } = ""; public string Role { get; set; } = Roles.Viewer; }
+
 public class LeagueContext(DbContextOptions<LeagueContext> options) : DbContext(options)
 {
     public DbSet<Team> Teams => Set<Team>();
@@ -28,4 +35,7 @@ public class LeagueContext(DbContextOptions<LeagueContext> options) : DbContext(
     public DbSet<Contact> Contacts => Set<Contact>();
     public DbSet<Game> Games => Set<Game>();
     public DbSet<Penalty> Penalties => Set<Penalty>();
+    public DbSet<User> Users => Set<User>();
+
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<User>().HasIndex(u => u.Username).IsUnique();
 }

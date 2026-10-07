@@ -11,8 +11,9 @@
   <div class="brand"><span class="logo">🪵</span><div><b>Puulaakiliiga</b><small>League manager</small></div></div>
   <nav id="nav"></nav>
   <div class="side-foot">
+    <div id="whoami"></div><button class="ghost" id="logoutBtn">Sign out</button>
     <button class="ghost" id="exportBtn">Export data</button>
-    <label class="ghost btn">Import data<input type="file" id="importFile" accept=".json" hidden></label>
+    <label class="ghost btn" id="importLabel">Import data<input type="file" id="importFile" accept=".json" hidden></label>
     <button class="ghost" id="demoBtn">Load demo data</button>
   </div>
 </aside>
@@ -24,6 +25,15 @@
   <section id="view"></section>
 </main>
 <dialog id="dlg"><form method="dialog" id="form"></form></dialog>
+<div id="auth" class="auth" hidden>
+  <form id="authForm">
+    <div class="logo">🪵</div><h2 id="authTitle"></h2><p id="authSub"></p>
+    <label>Username<input id="authUser" required autocomplete="username"></label>
+    <label>Password<input id="authPass" type="password" required autocomplete="current-password"></label>
+    <div id="authErr" role="alert"></div>
+    <button class="primary" id="authBtn"></button>
+  </form>
+</div>
 <div id="toast"></div>
 <script src="app.js"></script>
 </body>

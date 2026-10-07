@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
 using TeamManagerClassLibrary;
 
@@ -5,14 +6,40 @@ var builder = WebApplication.CreateBuilder(args);
 var connection = builder.Configuration.GetConnectionString("Default") ?? "Data Source=puulaakiliiga.db";
 builder.Services.AddDbContext<LeagueContext>(o => o.UseSqlite(connection));
 
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(o =>
+{
+    o.Cookie.Name = "puulaakiliiga.auth";
+    o.Cookie.HttpOnly = true;
+    o.Cookie.SameSite = SameSiteMode.Strict;
+    o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    o.ExpireTimeSpan = TimeSpan.FromHours(8);
+    o.SlidingExpiration = true;
+    // The UI is a SPA: answer with status codes instead of redirecting to a login page.
+    o.Events.OnRedirectToLogin = c => { c.Response.StatusCode = 401; return Task.CompletedTask; };
+    o.Events.OnRedirectToAccessDenied = c => { c.Response.StatusCode = 403; return Task.CompletedTask; };
+});
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("Admin", p => p.RequireRole(Roles.Admin))
+    .AddPolicy("CanEdit", p => p.RequireRole(Roles.Admin, Roles.Manager));
+
 var app = builder.Build();
 using (var scope = app.Services.CreateScope())
-    scope.ServiceProvider.GetRequiredService<LeagueContext>().Database.EnsureCreated();
+{
+    var db = scope.ServiceProvider.GetRequiredService<LeagueContext>();
+    db.Database.EnsureCreated();
+    // EnsureCreated skips existing databases, so add the Users table to ones created before logins existed.
+    db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS \"Users\" (\"Id\" INTEGER NOT NULL CONSTRAINT \"PK_Users\" PRIMARY KEY AUTOINCREMENT, \"Username\" TEXT NOT NULL, \"PasswordHash\" TEXT NOT NULL, \"Role\" TEXT NOT NULL)");
+    db.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Users_Username\" ON \"Users\" (\"Username\")");
+}
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.UseAuthentication();
+app.UseAuthorization();
 
-var api = app.MapGroup("/api");
+// Every /api route needs a signed-in user; writes additionally need Admin/Manager (see Crud below).
+var api = app.MapGroup("/api").RequireAuthorization();
+AuthEndpoints.Map(app, api);
 
 // Everything in one call: the UI keeps a local copy and computes standings from it.
 api.MapGet("/data", async (LeagueContext db) => new
@@ -37,7 +64,7 @@ api.MapPost("/import", async (LeagueContext db, ImportData d) =>
     await db.SaveChangesAsync();
     await tx.CommitAsync();
     return Results.NoContent();
-});
+}).RequireAuthorization("Admin");
 
 Crud<Team>("teams", async (db, id) =>
 {
@@ -65,7 +92,7 @@ void Crud<T>(string route, Func<LeagueContext, int, Task> cleanup) where T : Ent
         db.Add(e);
         await db.SaveChangesAsync();
         return Results.Created($"/api/{route}/{e.Id}", e);
-    });
+    }).RequireAuthorization("CanEdit");
     g.MapPut("/{id:int}", async (LeagueContext db, int id, T e) =>
     {
         if (!await db.Set<T>().AnyAsync(x => x.Id == id)) return Results.NotFound();
@@ -73,14 +100,14 @@ void Crud<T>(string route, Func<LeagueContext, int, Task> cleanup) where T : Ent
         db.Update(e);
         await db.SaveChangesAsync();
         return Results.Ok(e);
-    });
+    }).RequireAuthorization("CanEdit");
     g.MapDelete("/{id:int}", async (LeagueContext db, int id) =>
     {
         var n = await db.Set<T>().Where(x => x.Id == id).ExecuteDeleteAsync();
         if (n == 0) return Results.NotFound();
         await cleanup(db, id);
         return Results.NoContent();
-    });
+    }).RequireAuthorization("CanEdit");
 }
 
 record ImportData(List<Team>? Teams, List<Player>? Players, List<Coach>? Coaches, List<Contact>? Contacts, List<Game>? Games, List<Penalty>? Penalties);

@@ -1,18 +1,26 @@
 'use strict';
 // Puulaakiliiga – league manager. Data lives in the server's SQLite database (see /api).
-const EMPTY = { teams: [], players: [], coaches: [], contacts: [], games: [], penalties: [] };
+const EMPTY = { users: [], teams: [], players: [], coaches: [], contacts: [], games: [], penalties: [] };
 let db = structuredClone(EMPTY);
 let page = 'standings';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+let me = null;
+const canEdit = () => me && me.role !== 'Viewer';
+const isAdmin = () => me?.role === 'Admin';
 async function api(method, url, body) {
   const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
-  if (!r.ok) throw new Error(`${method} ${url} failed (${r.status})`);
+  if (r.status === 401 && !url.startsWith('/api/auth/')) { me = null; showAuth(); throw new Error('Please sign in'); }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || (r.status === 403 ? 'You do not have permission' : `Request failed (${r.status})`));
   return r.status === 204 ? null : r.json();
 }
 async function refresh() {
-  try { db = { ...EMPTY, ...await api('GET', '/api/data') }; render(); } catch (e) { toast('Cannot reach the server'); }
+  try {
+    db = { ...EMPTY, ...await api('GET', '/api/data') };
+    db.users = isAdmin() ? await api('GET', '/api/users') : [];
+    render();
+  } catch (e) { toast(e.message); }
 }
 const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
 const by = (list, id) => db[list].find(x => x.id === +id);
@@ -84,8 +92,19 @@ const E = {
       ['Min', p => p.minutes ?? '', 'num'], ['Reason', p => esc(p.reason)]],
   },
 };
-const NAV = ['standings', 'teams', 'players', 'coaches', 'contacts', 'games', 'penalties'];
-const LABEL = { standings: 'Standings', ...Object.fromEntries(Object.entries(E).map(([k, v]) => [k, v.title])) };
+E.users = {
+  title: 'Users', one: 'user',
+  fields: [
+    { k: 'username', label: 'Username', req: true },
+    { k: 'role', label: 'Role (Admin: everything · Manager: edit league data · Viewer: read-only)', type: 'select', opts: () => ['Viewer', 'Manager', 'Admin'].map(r => [r, r]), req: true },
+    { k: 'password', label: 'Password (min 8 characters; leave empty to keep the current one)', type: 'password' },
+  ],
+  sort: (a, b) => a.username.localeCompare(b.username),
+  cols: [['Username', u => `<b>${esc(u.username)}</b>${u.username === me?.username ? ' <span class="pill">you</span>' : ''}`], ['Role', u => `<span class="pill">${esc(u.role)}</span>`]],
+};
+const NAV_ALL = ['standings', 'teams', 'players', 'coaches', 'contacts', 'games', 'penalties', 'users'];
+const nav = () => NAV_ALL.filter(n => n !== 'users' || isAdmin());
+const LABEL = { users: 'Users',  standings: 'Standings', ...Object.fromEntries(Object.entries(E).map(([k, v]) => [k, v.title])) };
 
 // ---- Standings ---------------------------------------------------------------
 function standings() {
@@ -128,9 +147,9 @@ function renderList(name) {
   let items = [...db[name]];
   if (e.sort) items.sort(e.sort); else items.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')));
   if (q) items = items.filter(it => e.cols.map(c => c[1](it)).join(' ').replace(/<[^>]+>/g, '').toLowerCase().includes(q));
-  const heads = [...e.cols.map(c => [c[0], null, c[2]]), ['', null, '']];
-  const rows = items.map(it => [...e.cols.map(c => c[1](it)), `<button class="sm" data-edit="${it.id}">Edit</button> <button class="sm danger" data-del="${it.id}">Delete</button>`]);
-  return table(heads, rows, `No ${e.title.toLowerCase()} yet. Click “+ Add” to create the first one.`)
+  const heads = [...e.cols.map(c => [c[0], null, c[2]]), ...(canEdit() ? [['', null, '']] : [])];
+  const rows = items.map(it => [...e.cols.map(c => c[1](it)), ...(canEdit() ? [`<button class="sm" data-edit="${it.id}">Edit</button> <button class="sm danger" data-del="${it.id}">Delete</button>`] : [])]);
+  return table(heads, rows, `No ${e.title.toLowerCase()} yet.${canEdit() ? ' Click “+ Add” to create the first one.' : ''}`)
     .replace(/<td class="(num)?">(<button class="sm" data-edit)/g, '<td class="row-actions">$2');
 }
 
@@ -151,7 +170,7 @@ function openForm(name, item) {
     const rec = { ...(item || {}) };
     for (const x of e.fields) {
       const raw = new FormData(f).get(x.k);
-      rec[x.k] = x.type === 'number' ? (raw === '' ? null : +raw) : x.type === 'select' ? (raw === '' ? null : +raw) : String(raw).trim();
+      rec[x.k] = x.type === 'number' ? (raw === '' ? null : +raw) : x.type === 'select' ? (raw === '' ? null : /^\d+$/.test(raw) ? +raw : raw) : x.type === 'password' ? String(raw) : String(raw).trim();
     }
     const err = e.validate?.(rec); if (err) return toast(err);
     if (item) await api('PUT', `/api/${name}/${item.id}`, rec); else await api('POST', `/api/${name}`, rec);
@@ -162,17 +181,20 @@ function openForm(name, item) {
 
 const remove = guard(async (name, id) => {
   const it = by(name, id);
-  if (!confirm(`Delete ${it.name || E[name].one}?`)) return;
+  if (!confirm(`Delete ${it.name || it.username || E[name].one}?`)) return;
   await api('DELETE', `/api/${name}/${id}`);
   await refresh(); toast('Deleted');
 });
 
 // ---- Shell -----------------------------------------------------------------------
 function render() {
-  $('#nav').innerHTML = NAV.map(n => `<a data-p="${n}" class="${n === page ? 'on' : ''}">${LABEL[n]}${n !== 'standings' ? `<span>${db[n].length}</span>` : ''}</a>`).join('');
+  $('#nav').innerHTML = nav().map(n => `<a data-p="${n}" class="${n === page ? 'on' : ''}">${LABEL[n]}${n !== 'standings' ? `<span>${db[n].length}</span>` : ''}</a>`).join('');
   $('#title').textContent = LABEL[page];
   const list = page !== 'standings';
-  $('#addBtn').hidden = $('#search').hidden = !list;
+  $('#search').hidden = !list;
+  $('#addBtn').hidden = !list || !canEdit();
+  $('#importLabel').hidden = $('#demoBtn').hidden = !isAdmin();
+  $('#whoami').textContent = me ? `${me.username} · ${me.role}` : '';
   $('#addBtn').textContent = list ? `+ Add ${E[page].one}` : '';
   $('#view').innerHTML = list ? renderList(page) : renderStandings();
 }
@@ -218,6 +240,35 @@ $('#demoBtn').onclick = guard(async () => {
   await refresh(); toast('Demo data loaded');
 });
 
-if (NAV.includes(location.hash.slice(1))) page = location.hash.slice(1);
-render();
-refresh();
+// ---- Sign in / first-run setup -----------------------------------------------------
+let setupMode = false;
+function showAuth() {
+  $('#auth').hidden = false;
+  $('#authTitle').textContent = setupMode ? 'Welcome! Create the admin account' : 'Sign in';
+  $('#authSub').textContent = setupMode ? 'This is the first run. The admin can add other users later.' : 'Puulaakiliiga league manager';
+  $('#authBtn').textContent = setupMode ? 'Create admin & sign in' : 'Sign in';
+  $('#authPass').autocomplete = setupMode ? 'new-password' : 'current-password';
+  $('#authErr').textContent = ''; $('#authPass').value = '';
+  $('#authUser').focus();
+}
+$('#authForm').onsubmit = async ev => {
+  ev.preventDefault();
+  try {
+    me = await api('POST', setupMode ? '/api/auth/setup' : '/api/auth/login', { username: $('#authUser').value, password: $('#authPass').value });
+    setupMode = false; $('#auth').hidden = true; $('#authPass').value = '';
+    if (!nav().includes(page)) page = 'standings';
+    await refresh();
+  } catch (e) { $('#authErr').textContent = e.message; }
+};
+$('#logoutBtn').onclick = async () => { try { await api('POST', '/api/auth/logout'); } catch {} me = null; db = structuredClone(EMPTY); render(); showAuth(); };
+
+(async function boot() {
+  const r = await fetch('/api/auth/me');
+  if (r.ok) {
+    const j = await r.json();
+    if (j.needsSetup) { setupMode = true; return showAuth(); }
+    me = j; $('#auth').hidden = true;
+    const h = location.hash.slice(1); if (nav().includes(h)) page = h;
+    await refresh();
+  } else showAuth();
+})();
