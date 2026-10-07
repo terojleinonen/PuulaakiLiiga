@@ -57,14 +57,14 @@ Schema changes use EF Core migrations, applied automatically at startup. Databas
 
 `docker-compose.yml` runs the app plus [Caddy](https://caddyserver.com), which terminates HTTPS:
 
-    docker-compose up --build        # https://localhost:8443 (also: docker compose up --build)
+    docker compose up --build        # https://localhost:8443
 
 Locally Caddy uses its own certificate authority, so the browser shows a warning until you run
-`docker-compose exec caddy caddy trust` (or just accept it). For a real domain:
+`docker compose exec caddy caddy trust` (or just accept it). For a real domain:
 
     SITE_ADDRESS=league.example.com PUBLIC_URL=https://league.example.com \
     SMTP_HOST=smtp.example.com SMTP_USER=... SMTP_PASSWORD=... SMTP_FROM=league@example.com \
-    docker-compose up -d
+    docker compose up -d
 
 and change the port mappings in `docker-compose.yml` to `80:80` / `443:443`; Caddy then fetches a Let's Encrypt
 certificate automatically. Data lives in the `puulaakiliiga-data` volume.
