@@ -155,3 +155,6 @@ void Crud<T>(string route, Func<LeagueContext, int, Task> cleanup) where T : Ent
 }
 
 record ImportData(List<Team>? Teams, List<Player>? Players, List<Coach>? Coaches, List<Contact>? Contacts, List<Game>? Games, List<Penalty>? Penalties);
+
+// Lets the integration tests (tests/PuulaakiLiiga.Tests) start the app with WebApplicationFactory.
+public partial class Program { }

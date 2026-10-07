@@ -3,3 +3,4 @@
 **/*.db*
 .git/
 .DS_Store
+tests/

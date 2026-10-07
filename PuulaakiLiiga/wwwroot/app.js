@@ -108,22 +108,10 @@ const nav = () => NAV_ALL.filter(n => n !== 'users' || isAdmin());
 const LABEL = { users: 'Users',  standings: 'Standings', ...Object.fromEntries(Object.entries(E).map(([k, v]) => [k, v.title])) };
 
 // ---- Standings ---------------------------------------------------------------
-function standings() {
-  const rows = new Map(db.teams.map(t => [t.id, { t, gp: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, pts: 0, pim: 0 }]));
-  for (const g of db.games) {
-    if (g.homeScore == null || !rows.has(g.homeId) || !rows.has(g.awayId)) continue;
-    const h = rows.get(g.homeId), a = rows.get(g.awayId);
-    h.gp++; a.gp++; h.gf += g.homeScore; h.ga += g.awayScore; a.gf += g.awayScore; a.ga += g.homeScore;
-    if (g.homeScore > g.awayScore) { h.w++; a.l++; h.pts += 3; }
-    else if (g.homeScore < g.awayScore) { a.w++; h.l++; a.pts += 3; }
-    else { h.d++; a.d++; h.pts++; a.pts++; }
-  }
-  for (const p of db.penalties) { const r = rows.get(by('players', p.playerId)?.teamId); if (r) r.pim += p.minutes || 0; }
-  return [...rows.values()].sort((a, b) => b.pts - a.pts || (b.gf - b.ga) - (a.gf - a.ga) || b.gf - a.gf || a.t.name.localeCompare(b.t.name));
-}
+const standings = () => computeStandings(db);
 
 function renderStandings() {
-  const s = standings(), played = db.games.filter(g => g.homeScore != null);
+  const s = standings(), played = db.games.filter(g => g.homeScore != null && g.awayScore != null);
   const goals = played.reduce((n, g) => n + g.homeScore + g.awayScore, 0);
   const stat = (n, l) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`;
   const upcoming = db.games.filter(g => g.homeScore == null).sort(E.games.sort).slice(0, 5);

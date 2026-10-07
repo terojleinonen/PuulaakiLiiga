@@ -31,6 +31,12 @@ jobs:
       - name: Check the UI script parses
         run: node --check PuulaakiLiiga/wwwroot/app.js
 
+      - name: Standings tests (JavaScript)
+        run: node --test tests/js/*.test.js
+
+      - name: Role rule tests (xUnit, runs the real app on a temporary database)
+        run: dotnet test --no-build -c Release
+
       # Fails when the entities were changed without adding a migration.
       - name: Check migrations match the model
         run: |

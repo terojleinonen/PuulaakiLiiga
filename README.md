@@ -29,6 +29,7 @@ Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 |---|---|
 | `PuulaakiLiiga/` | Web app: `Program.cs` (setup + data API), `Auth.cs` (login, users, password reset), `Email.cs`, `wwwroot/` (UI) |
 | `TeamManagerClassLibrary/` | Entities, `LeagueContext` (EF Core) and migrations |
+| `tests/` | JavaScript tests for the standings, xUnit tests for roles and logins |
 | `Dockerfile`, `docker-compose.yml`, `Caddyfile` | Container deployment with HTTPS |
 
 ## Configuration
@@ -90,6 +91,18 @@ and change the port mappings in `docker-compose.yml` to `80:80` / `443:443`; Cad
 certificate automatically. The database lives in the `puulaakiliiga-data` volume; back it up like any other file.
 
 Without Docker, put any HTTPS reverse proxy in front of the app.
+
+## Tests
+
+    node --test tests/js/*.test.js     # league table rules (win/draw points, tie-breaks, penalty minutes, bad data)
+    dotnet test                        # roles and login rules, against the real app on a throw-away database
+
+- `tests/js` tests `PuulaakiLiiga/wwwroot/standings.js`, the pure function behind the standings page.
+- `tests/PuulaakiLiiga.Tests` starts the app with `WebApplicationFactory` and checks the role matrix (anonymous / Viewer /
+  Manager / Admin on every endpoint), first-run setup, user management rules (unique names, last admin, own account),
+  session invalidation, lockout and password change/reset.
+
+Both run in CI on every push and pull request.
 
 ## Database and migrations
 
